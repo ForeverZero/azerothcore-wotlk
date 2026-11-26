@@ -16,18 +16,15 @@
  */
 
 #include "Chat.h"
-#include "Player.h"
-#include "PlayerScript.h"
-#include "SharedDefines.h"
+#include "CommandScript.h"
+#include "Common.h"
 #include <algorithm>
 #include <cctype>
-#include <sstream>
-#include <string>
 #include <string_view>
 
 namespace
 {
-constexpr std::string_view AddonPrefix = "ACPlayerBots\t";
+using namespace Acore::ChatCommands;
 
 struct ClassName
 {
@@ -50,50 +47,52 @@ constexpr ClassName ClassNames[] =
     { "Druid", "德鲁伊", "德魯伊" }
 };
 
-void HandlePlayerBotsCommand(ChatHandler& handler, std::string_view command)
-{
-    std::istringstream input{ std::string(command) };
-    std::string action;
-    std::string argument;
-    std::string requestedClass;
-    if (!(input >> action >> argument) || action != "add" || argument != "class" ||
-        !std::getline(input >> std::ws, requestedClass))
-    {
-        handler.SendSysMessage("Usage: /pb add class <class>");
-        return;
-    }
-
-    requestedClass.erase(requestedClass.find_last_not_of(" \t\r\n") + 1);
-    for (ClassName const& className : ClassNames)
-    {
-        if (requestedClass == className.SimplifiedChinese || requestedClass == className.TraditionalChinese ||
-            std::ranges::equal(requestedClass, className.English, [](unsigned char left, unsigned char right)
-            {
-                return std::tolower(left) == std::tolower(right);
-            }))
-        {
-            handler.PSendSysMessage("PlayerBots: received add class request for {}.", className.English);
-            return;
-        }
-    }
-
-    handler.SendSysMessage("PlayerBots: unknown class. Usage: /pb add class <class>");
-}
-
-class PlayerBotsCommands final : public PlayerScript
+class PlayerBotsCommands final : public CommandScript
 {
 public:
-    PlayerBotsCommands() : PlayerScript("PlayerBotsCommands", { PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT }) { }
+    PlayerBotsCommands() : CommandScript("PlayerBotsCommands") { }
 
-    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& message,
-        Player* receiver) override
+    ChatCommandTable GetCommands() const override
     {
-        if (type != CHAT_MSG_WHISPER || language != LANG_ADDON || player != receiver ||
-            !message.starts_with(AddonPrefix))
-            return true;
+        static ChatCommandTable const addCommands =
+        {
+            { "class", HandleAddClass, SEC_PLAYER, Console::No }
+        };
 
-        ChatHandler handler(player->GetSession());
-        HandlePlayerBotsCommand(handler, std::string_view(message).substr(AddonPrefix.size()));
+        static ChatCommandTable const playerBotsCommands =
+        {
+            { "add", addCommands }
+        };
+
+        return { { "pb", playerBotsCommands } };
+    }
+
+private:
+    static bool HandleAddClass(ChatHandler* handler, Tail args)
+    {
+        constexpr std::string_view whitespace = " \t\r\n";
+        std::size_t const first = args.find_first_not_of(whitespace);
+        if (first == std::string_view::npos)
+        {
+            handler->SendErrorMessage("Usage: .pb add class <class>");
+            return false;
+        }
+
+        std::string_view const requestedClass = args.substr(first, args.find_last_not_of(whitespace) - first + 1);
+        for (ClassName const& className : ClassNames)
+        {
+            if (requestedClass == className.SimplifiedChinese || requestedClass == className.TraditionalChinese ||
+                std::ranges::equal(requestedClass, className.English, [](unsigned char left, unsigned char right)
+                {
+                    return std::tolower(left) == std::tolower(right);
+                }))
+            {
+                handler->PSendSysMessage("PlayerBots: received add class request for {}.", className.English);
+                return true;
+            }
+        }
+
+        handler->SendErrorMessage("PlayerBots: unknown class. Usage: .pb add class <class>");
         return false;
     }
 };
