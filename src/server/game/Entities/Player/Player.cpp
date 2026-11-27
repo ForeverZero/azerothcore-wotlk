@@ -1410,6 +1410,49 @@ void Player::SendTeleportAckPacket()
     GetSession()->IncrementOrderCounter();
 }
 
+bool Player::TeleportTo(Map& map, Position const& position)
+{
+    if (!GetSession()->IsTransient() || !IsInWorld() || map.IsBattlegroundOrArena() ||
+        !MapMgr::IsValidMapCoord(map.GetId(), position))
+        return false;
+
+    Map* const oldMap = GetMap();
+    if (oldMap != &map && map.CannotEnter(this) != Map::CAN_ENTER)
+        return false;
+
+    GetMotionMaster()->Clear();
+    StopMoving();
+    Position oldPosition = GetPosition();
+    if (oldMap == &map)
+    {
+        Relocate(position);
+        SendTeleportPacket(oldPosition);
+        SetCanTeleport(false);
+        UpdatePosition(position.GetPositionX(), position.GetPositionY(), position.GetPositionZ(),
+            position.GetOrientation(), true);
+        return true;
+    }
+
+    oldMap->RemovePlayerFromMap(this, false);
+    ResetMap();
+    Relocate(position);
+    SetMap(&map);
+    UpdatePositionData();
+    if (!map.AddPlayerToMap(this))
+    {
+        ResetMap();
+        Relocate(oldPosition);
+        SetMap(oldMap);
+        UpdatePositionData();
+        // Reattach to the original map even if its instance is already marked for reset.
+        oldMap->Map::AddPlayerToMap(this);
+        return false;
+    }
+
+    oldMap->AfterPlayerUnlinkFromMap();
+    return true;
+}
+
 bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientation, uint32 options /*= 0*/, Unit* target /*= nullptr*/, bool newInstance /*= false*/)
 {
     if (GetSession()->IsTransient())

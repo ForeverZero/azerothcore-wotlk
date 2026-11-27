@@ -639,9 +639,13 @@ void Unit::Update(uint32 p_time)
     ModifyAuraState(AURA_STATE_HEALTHLESS_35_PERCENT, IsAlive() ? HealthBelowPct(35) : false);
     ModifyAuraState(AURA_STATE_HEALTH_ABOVE_75_PERCENT, IsAlive() ? HealthAbovePct(75) : false);
 
-    UpdateSplineMovement(p_time);
-    GetMotionMaster()->UpdateMotion(p_time);
+    UpdateMovement(p_time);
+}
 
+void Unit::UpdateMovement(uint32 diff)
+{
+    UpdateSplineMovement(diff);
+    GetMotionMaster()->UpdateMotion(diff);
     InvalidateValuesUpdateCache();
 }
 

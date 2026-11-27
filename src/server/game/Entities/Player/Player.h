@@ -1105,6 +1105,9 @@ public:
     }
 
     bool TeleportTo(uint32 mapid, float x, float y, float z, float orientation, uint32 options = 0, Unit* target = nullptr, bool newInstance = false);
+    // Relocates an in-world transient player immediately, on the world thread, without a client acknowledgement.
+    // A rejected transfer leaves the player on its original map.
+    bool TeleportTo(Map& map, Position const& position);
     bool TeleportTo(WorldLocation const& loc, uint32 options = 0, Unit* target = nullptr)
     {
         return TeleportTo(loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ(), loc.GetOrientation(), options, target);

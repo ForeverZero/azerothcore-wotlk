@@ -19,11 +19,14 @@
 #include "Chat.h"
 #include "CommandScript.h"
 #include "Common.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "GroupScript.h"
 #include "LFGMgr.h"
 #include "Map.h"
+#include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -36,6 +39,7 @@
 #include <algorithm>
 #include <cctype>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -69,10 +73,25 @@ constexpr ClassName ClassNames[] =
     { CLASS_DRUID, "Druid", "德鲁伊", "德魯伊" }
 };
 
+enum class BotState
+{
+    Follow
+};
+
+struct PlayerBot
+{
+    explicit PlayerBot(std::unique_ptr<WorldSession> session) : Session(std::move(session)) { }
+
+    std::unique_ptr<WorldSession> Session;
+    BotState State = BotState::Follow;
+    bool ApproachingOwner = false;
+    std::optional<TimePoint> OutOfRangeSince;
+};
+
 struct PartyBots
 {
     ObjectGuid GroupGuid;
-    std::vector<std::unique_ptr<WorldSession>> Sessions;
+    std::vector<PlayerBot> Members;
 };
 
 std::unordered_map<ObjectGuid, PartyBots> BotsByOwner;
@@ -236,10 +255,71 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
 
     PartyBots& party = BotsByOwner[ownerGuid];
     party.GroupGuid = group->GetGUID();
-    party.Sessions.push_back(std::move(session));
+    party.Members.emplace_back(std::move(session));
     group->BroadcastGroupUpdate();
     handler.PSendSysMessage("PlayerBots: {} ({}) joined your group.", name, className.English);
     return true;
+}
+
+void StopFollowing(Player& player)
+{
+    MotionMaster* motion = player.GetMotionMaster();
+    if (motion->GetMotionSlotType(MOTION_SLOT_ACTIVE) == FOLLOW_MOTION_TYPE)
+        motion->MovementExpiredOnSlot(MOTION_SLOT_ACTIVE);
+
+    player.StopMoving();
+}
+
+void UpdateFollow(PlayerBot& bot, Player& player, Player& owner, TimePoint now)
+{
+    constexpr float startDistance = 10.0f;
+    constexpr float stopDistance = 5.0f;
+    constexpr float teleportDistance = 200.0f;
+    constexpr Seconds teleportDelay{30};
+
+    Map& ownerMap = *owner.GetMap();
+    if (player.GetPhaseMask() != owner.GetPhaseMask())
+        player.SetPhaseMask(owner.GetPhaseMask(), true);
+
+    if (player.GetMap() != &ownerMap)
+    {
+        bot.OutOfRangeSince.reset();
+        bot.ApproachingOwner = false;
+        StopFollowing(player);
+        player.TeleportTo(ownerMap, owner.GetPosition());
+        return;
+    }
+
+    float const distance = player.GetExactDist(owner.GetPosition());
+    if (distance <= teleportDistance)
+        bot.OutOfRangeSince.reset();
+    else if (!bot.OutOfRangeSince)
+        bot.OutOfRangeSince = now;
+    else if (now - *bot.OutOfRangeSince >= teleportDelay)
+    {
+        if (player.TeleportTo(ownerMap, owner.GetPosition()))
+        {
+            bot.OutOfRangeSince.reset();
+            bot.ApproachingOwner = false;
+        }
+        return;
+    }
+
+    if (distance <= stopDistance)
+    {
+        bot.ApproachingOwner = false;
+        StopFollowing(player);
+        return;
+    }
+
+    // Once started, close to five yards before going idle so the ten-yard trigger does not cause stutter.
+    if (!bot.ApproachingOwner && distance <= startDistance)
+        return;
+
+    bot.ApproachingOwner = true;
+    MotionMaster* motion = player.GetMotionMaster();
+    if (motion->GetMotionSlotType(MOTION_SLOT_ACTIVE) != FOLLOW_MOTION_TYPE || player.movespline->Finalized())
+        motion->MoveFollow(&owner, 0.0f, float(M_PI), MOTION_SLOT_ACTIVE, false);
 }
 
 void QueueOwnerLogout(ObjectGuid owner)
@@ -248,8 +328,8 @@ void QueueOwnerLogout(ObjectGuid owner)
     if (party.empty())
         return;
 
-    for (auto& session : party.mapped().Sessions)
-        PendingLogout.push_back(std::move(session));
+    for (PlayerBot& bot : party.mapped().Members)
+        PendingLogout.push_back(std::move(bot.Session));
 }
 
 void LogOutPendingBots()
@@ -303,18 +383,18 @@ public:
                 return;
             }
 
-            auto& sessions = party->second.Sessions;
-            auto removed = std::ranges::find_if(sessions, [guid](auto const& session)
+            auto& members = party->second.Members;
+            auto removed = std::ranges::find_if(members, [guid](PlayerBot const& bot)
             {
-                Player const* bot = session->GetPlayer();
-                return bot && bot->GetGUID() == guid;
+                Player const* player = bot.Session->GetPlayer();
+                return player && player->GetGUID() == guid;
             });
-            if (removed == sessions.end())
+            if (removed == members.end())
                 continue;
 
-            PendingLogout.push_back(std::move(*removed));
-            sessions.erase(removed);
-            if (sessions.empty())
+            PendingLogout.push_back(std::move(removed->Session));
+            members.erase(removed);
+            if (members.empty())
                 BotsByOwner.erase(party);
 
             return;
@@ -338,7 +418,40 @@ public:
     PlayerBotsWorldEvents() : WorldScript("PlayerBotsWorldEvents", { WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_SHUTDOWN }) { }
 
     // Group hooks can run while the group is unlinking members or being deleted.
-    void OnUpdate(uint32) override { LogOutPendingBots(); }
+    void OnUpdate(uint32) override
+    {
+        LogOutPendingBots();
+        TimePoint const now = GameTime::Now();
+        if (BotsByOwner.empty() || now < _nextFollowUpdate)
+            return;
+
+        _nextFollowUpdate = now + Milliseconds{250};
+        for (auto& [ownerGuid, party] : BotsByOwner)
+        {
+            Player* owner = ObjectAccessor::FindPlayer(ownerGuid);
+            for (PlayerBot& bot : party.Members)
+            {
+                Player* player = bot.Session->GetPlayer();
+                if (!player || !player->IsInWorld())
+                    continue;
+
+                if (!owner)
+                {
+                    bot.OutOfRangeSince.reset();
+                    bot.ApproachingOwner = false;
+                    StopFollowing(*player);
+                    continue;
+                }
+
+                switch (bot.State)
+                {
+                    case BotState::Follow:
+                        UpdateFollow(bot, *player, *owner, now);
+                        break;
+                }
+            }
+        }
+    }
 
     void OnShutdown() override
     {
@@ -347,6 +460,9 @@ public:
 
         LogOutPendingBots();
     }
+
+private:
+    TimePoint _nextFollowUpdate{};
 };
 
 class PlayerBotsCommands final : public CommandScript

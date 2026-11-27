@@ -52,8 +52,14 @@ constexpr auto ZONE_UPDATE_INTERVAL = 1000;
 
 void Player::Update(uint32 p_time)
 {
-    if (!IsInWorld() || GetSession()->IsTransient())
+    if (!IsInWorld())
         return;
+
+    if (GetSession()->IsTransient())
+    {
+        UpdateMovement(p_time);
+        return;
+    }
 
     sScriptMgr->OnPlayerBeforeUpdate(this, p_time);
 

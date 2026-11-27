@@ -3,10 +3,14 @@
 The server discovers this module through AzerothCore's module loader. Build `worldserver` with the module enabled.
 
 Enter `.pb add class Warrior`, `.pb add class Death Knight`, or `.pb add class 战士` in the chat box.
-The server creates an idle character with a random name and a race on your faction that can play the requested class.
+The server creates a character with a random name and a race on your faction that can play the requested class.
 It appears at your position and joins your party or raid. If you are solo, a party is created automatically.
 When the party is full, the leader's next add command converts it to a raid and adds the bot.
 The command fails when the raid reaches 40 members.
+
+Bots start in Follow state. They remain still within 10 yards. Once they start moving, they close to within 5 yards.
+They teleport to their owner after a map change or after more than 200 yards of separation for 30 seconds.
+Cross-map transfers respect instance entry checks and do not enter battlegrounds or arenas.
 
 A bot goes offline when it is removed from the group. All bots you created go offline when you log out, leave your
 group, or the group disbands. The characters and their group memberships are held in memory.

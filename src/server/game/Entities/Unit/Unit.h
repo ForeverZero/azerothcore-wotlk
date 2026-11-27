@@ -2135,6 +2135,8 @@ public:
     Movement::MoveSpline* movespline;
 
 protected:
+    void UpdateMovement(uint32 diff);
+
     explicit Unit();
 
     void BuildValuesUpdate(uint8 updateType, ByteBuffer* data, Player* target) override;
