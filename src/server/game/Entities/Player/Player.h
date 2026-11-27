@@ -1117,7 +1117,9 @@ public:
     void SummonIfPossible(bool agree, ObjectGuid summoner_guid);
     [[nodiscard]] time_t GetSummonExpireTimer() const { return m_summon_expire; }
 
-    bool Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo);
+    // An existing map and position can override the race/class starting location.
+    bool Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo, Map* map = nullptr,
+        Position const* position = nullptr);
 
     void Update(uint32 time) override;
 

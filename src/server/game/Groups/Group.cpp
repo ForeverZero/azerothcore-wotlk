@@ -470,9 +470,10 @@ bool Group::AddMember(Player* player, uint8 roles /* = 0 */)
     member.group     = subGroup;
     member.flags     = 0;
     member.roles     = roles;
+    member.Transient = player->GetSession()->IsTransient();
     m_memberSlots.push_back(member);
 
-    if (!isBGGroup() && !isBFGroup())
+    if (!member.Transient && !isBGGroup() && !isBFGroup())
     {
         sCharacterCache->UpdateCharacterGroup(player->GetGUID(), GetGUID());
     }
@@ -502,7 +503,7 @@ bool Group::AddMember(Player* player, uint8 roles /* = 0 */)
             m_targetIcons[i].Clear();
     }
 
-    if (!isBGGroup() && !isBFGroup())
+    if (!member.Transient && !isBGGroup() && !isBFGroup())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_GROUP_MEMBER);
         stmt->SetData(0, GetGUID().GetCounter());
@@ -521,7 +522,8 @@ bool Group::AddMember(Player* player, uint8 roles /* = 0 */)
 
         if (!IsLeader(player->GetGUID()) && !isBGGroup() && !isBFGroup())
         {
-            Player::ResetInstances(player->GetGUID(), INSTANCE_RESET_GROUP_JOIN, false);
+            if (!member.Transient)
+                Player::ResetInstances(player->GetGUID(), INSTANCE_RESET_GROUP_JOIN, false);
 
             if (player->GetDungeonDifficulty() != GetDungeonDifficulty())
             {
@@ -704,8 +706,11 @@ bool Group::RemoveMember(ObjectGuid guid, RemoveMethod const& method /*= GROUP_R
             }
         }
 
-        // Remove player from group in DB
-        if (!isBGGroup() && !isBFGroup())
+        member_witerator slot = _getMemberWSlot(guid);
+        bool const transient = slot != m_memberSlots.end() && slot->Transient;
+
+        // Remove persistent membership from the database.
+        if (!transient && !isBGGroup() && !isBFGroup())
         {
             CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_GROUP_MEMBER);
             stmt->SetData(0, guid.GetCounter());
@@ -717,13 +722,12 @@ bool Group::RemoveMember(ObjectGuid guid, RemoveMethod const& method /*= GROUP_R
         RemovePlayerFromRolls(guid);
 
         // Update subgroups
-        member_witerator slot = _getMemberWSlot(guid);
         if (slot != m_memberSlots.end())
         {
             SubGroupCounterDecrease(slot->group);
             m_memberSlots.erase(slot);
 
-            if (!isBGGroup() && !isBFGroup())
+            if (!transient && !isBGGroup() && !isBFGroup())
             {
                 sCharacterCache->ClearCharacterGroup(guid);
             }
@@ -742,7 +746,7 @@ bool Group::RemoveMember(ObjectGuid guid, RemoveMethod const& method /*= GROUP_R
             validLeader = false;
             for (member_witerator itr = m_memberSlots.begin(); itr != m_memberSlots.end(); ++itr)
             {
-                if (ObjectAccessor::FindConnectedPlayer(itr->guid))
+                if (!itr->Transient && ObjectAccessor::FindConnectedPlayer(itr->guid))
                 {
                     ChangeLeader(itr->guid);
                     validLeader = true;
@@ -752,7 +756,7 @@ bool Group::RemoveMember(ObjectGuid guid, RemoveMethod const& method /*= GROUP_R
         }
 
         _homebindIfInstance(player);
-        if (!isBGGroup() && !isBFGroup())
+        if (!transient && !isBGGroup() && !isBFGroup())
             Player::ResetInstances(guid, INSTANCE_RESET_GROUP_LEAVE, false);
 
         sScriptMgr->OnGroupRemoveMember(this, guid, method, kicker, reason);
@@ -802,7 +806,7 @@ void Group::ChangeLeader(ObjectGuid newLeaderGuid)
 {
     member_witerator slot = _getMemberWSlot(newLeaderGuid);
 
-    if (slot == m_memberSlots.end())
+    if (slot == m_memberSlots.end() || slot->Transient)
         return;
 
     Player* newLeader = ObjectAccessor::FindConnectedPlayer(slot->guid);
@@ -854,7 +858,7 @@ void Group::ForcedDisband(bool hideDestroy /* = false */)
 
     for (member_citerator citr = m_memberSlots.begin(); citr != m_memberSlots.end(); ++citr)
     {
-        if (!isBGGroup() && !isBFGroup())
+        if (!citr->Transient && !isBGGroup() && !isBFGroup())
         {
             sCharacterCache->ClearCharacterGroup(citr->guid);
         }
@@ -867,7 +871,7 @@ void Group::ForcedDisband(bool hideDestroy /* = false */)
         }
 
         _homebindIfInstance(player);
-        if (!isBGGroup() && !isBFGroup())
+        if (!citr->Transient && !isBGGroup() && !isBFGroup())
             Player::ResetInstances(citr->guid, INSTANCE_RESET_GROUP_LEAVE, false);
 
         if (!player)
@@ -2065,8 +2069,8 @@ void Group::ChangeMembersGroup(ObjectGuid guid, uint8 group)
     // ..and decrease the counter of the previous one
     SubGroupCounterDecrease(prevSubGroup);
 
-    // Preserve new sub group in database for non-raid groups
-    if (!isBGGroup() && !isBFGroup())
+    // Preserve the subgroup of a persistent member.
+    if (!slot->Transient && !isBGGroup() && !isBFGroup())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_MEMBER_SUBGROUP);
 
@@ -2196,8 +2200,8 @@ GroupJoinBattlegroundResult Group::CanJoinBattlegroundQueue(Battleground const* 
     {
         Player* member = itr->GetSource();
 
-        // don't let join with offline members
-        if (!member)
+        // Queue members must be online and able to accept the invitation.
+        if (!member || member->GetSession()->IsTransient())
             return ERR_BATTLEGROUND_JOIN_FAILED;
 
         if (!sScriptMgr->CanGroupJoinBattlegroundQueue(this, member, bgTemplate, MinPlayerCount, isRated, arenaSlot))
@@ -2424,7 +2428,8 @@ void Group::ResetInstances(uint8 method, bool isRaid, Player* leader)
 
 void Group::_homebindIfInstance(Player* player)
 {
-    if (player && !player->IsGameMaster() && player->FindMap() && sMapStore.LookupEntry(player->GetMapId())->IsDungeon())
+    if (player && !player->GetSession()->IsTransient() && !player->IsGameMaster() &&
+        player->FindMap() && sMapStore.LookupEntry(player->GetMapId())->IsDungeon())
         player->m_InstanceValid = false;
 }
 
@@ -2670,13 +2675,13 @@ void Group::SetGroupMemberFlag(ObjectGuid guid, bool apply, GroupMemberFlags fla
     // Switch the actual flag
     ToggleGroupMemberFlag(slot, flag, apply);
 
-    // Preserve the new setting in the db
-    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_MEMBER_FLAG);
-
-    stmt->SetData(0, slot->flags);
-    stmt->SetData(1, guid.GetCounter());
-
-    CharacterDatabase.Execute(stmt);
+    if (!slot->Transient)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_MEMBER_FLAG);
+        stmt->SetData(0, slot->flags);
+        stmt->SetData(1, guid.GetCounter());
+        CharacterDatabase.Execute(stmt);
+    }
 
     // Broadcast the changes to the group
     SendUpdate();

@@ -718,7 +718,8 @@ struct ResetNotifier
 
 void Map::RemovePlayerFromMap(Player* player, bool remove)
 {
-    UpdatePlayerZoneStats(player->GetZoneId(), MAP_INVALID_ZONE);
+    if (!player->GetSession()->IsTransient())
+        UpdatePlayerZoneStats(player->GetZoneId(), MAP_INVALID_ZONE);
 
     player->GetThreatMgr().RemoveMeFromThreatLists(); // pussywizard: multithreading crashfix
 
@@ -2036,6 +2037,10 @@ Map::EnterState InstanceMap::CannotEnter(Player* player, bool loginCheck)
         return CANNOT_ENTER_ZONE_IN_COMBAT;
     }
 
+    // Transient players use the instance already selected by their owning gameplay context.
+    if (player->GetSession()->IsTransient())
+        return Map::CannotEnter(player, loginCheck);
+
     // xinef: dont allow LFG Group to enter other instance that is selected
     if (Group* group = player->GetGroup())
         if (group->isLFGGroup())
@@ -2053,7 +2058,7 @@ Map::EnterState InstanceMap::CannotEnter(Player* player, bool loginCheck)
             {
                 if (iPlayer == player) // login case, player already added to map
                     continue;
-                if (iPlayer->IsGameMaster()) // bypass GMs
+                if (iPlayer->IsGameMaster() || iPlayer->GetSession()->IsTransient())
                     continue;
                 if (!player->GetGroup()) // player has not group and there is someone inside, deny entry
                 {
@@ -2080,7 +2085,8 @@ bool InstanceMap::AddPlayerToMap(Player* player)
     if (m_resetAfterUnload) // this instance has been reset, it's not meant to be used anymore
         return false;
 
-    if (IsDungeon())
+    bool const transient = player->GetSession()->IsTransient();
+    if (IsDungeon() && !transient)
     {
         Group* group = player->GetGroup();
 
@@ -2144,9 +2150,10 @@ bool InstanceMap::AddPlayerToMap(Player* player)
     m_unloadWhenEmpty = false;
 
     // this will acquire the same mutex so it cannot be in the previous block
-    Map::AddPlayerToMap(player);
+    if (!Map::AddPlayerToMap(player))
+        return false;
 
-    if (instance_data)
+    if (instance_data && !transient)
         instance_data->OnPlayerEnter(player);
 
     return true;
@@ -2163,7 +2170,7 @@ void InstanceMap::Update(const uint32 t_diff, const uint32 s_diff, bool /*thread
 
 void InstanceMap::RemovePlayerFromMap(Player* player, bool remove)
 {
-    if (instance_data)
+    if (instance_data && !player->GetSession()->IsTransient())
         instance_data->OnPlayerLeave(player);
     // pussywizard: moved m_unloadTimer to InstanceMap::AfterPlayerUnlinkFromMap(), in this function if 2 players run out at the same time the instance won't close
     //if (!m_unloadTimer && m_mapRefMgr.getSize() == 1)
@@ -2295,6 +2302,9 @@ void InstanceMap::PermBindAllPlayers()
     for (MapRefMgr::iterator itr = m_mapRefMgr.begin(); itr != m_mapRefMgr.end(); ++itr)
     {
         player = itr->GetSource();
+        if (player->GetSession()->IsTransient())
+            continue;
+
         group = player->GetGroup();
 
         // players inside an instance cannot be bound to other instances

@@ -385,6 +385,9 @@ void WorldSession::LogUnprocessedTail(WorldPacket* packet)
 /// Update the WorldSession (triggered by World update)
 bool WorldSession::Update(uint32 diff, PacketFilter& updater)
 {
+    if (IsTransient())
+        return true;
+
     ///- Before we process anything:
     /// If necessary, kick the player because the client didn't send anything for too long
     /// (or they've been idling in character select)
@@ -686,6 +689,17 @@ void WorldSession::SendPlayTimeWarning(PlayTimeFlag flag, int32 playTimeRemainin
 /// %Log the player out
 void WorldSession::LogoutPlayer(bool save, bool redirecting)
 {
+    if (_player && IsTransient())
+    {
+        _player->RemoveFromGroup();
+        _player->CleanupsBeforeDelete();
+        Map* map = _player->GetMap();
+        map->RemovePlayerFromMap(_player, true);
+        map->AfterPlayerUnlinkFromMap();
+        SetPlayer(nullptr);
+        return;
+    }
+
     // finish pending transfers before starting the logout
     while (_player && _player->IsBeingTeleportedFar())
         HandleMoveWorldportAck();
@@ -1700,6 +1714,9 @@ QueryCallback WorldSession::LoadPermissionsAsync()
 
 bool WorldSession::HasPermission(uint32 permission)
 {
+    if (IsTransient())
+        return false;
+
     if (!_RBACData)
         LoadPermissions();
 

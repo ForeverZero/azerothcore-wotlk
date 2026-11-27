@@ -1234,6 +1234,9 @@ public:                                                 // opcodes handlers
 
     [[nodiscard]] bool IsHeadless() const { return _headless; }
 
+    // An accountless, socketless session owns no persistent character or account data.
+    [[nodiscard]] bool IsTransient() const { return IsHeadless() && GetAccountId() == 0; }
+
 private:
     QueryCallbackProcessor _queryProcessor;
     AsyncCallbackProcessor<TransactionCallback> _transactionCallbacks;

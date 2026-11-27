@@ -185,6 +185,7 @@ public:
         uint8       group;
         uint8       flags;
         uint8       roles;
+        bool        Transient = false;
     };
     typedef std::list<MemberSlot> MemberSlotList;
     typedef MemberSlotList::const_iterator member_citerator;

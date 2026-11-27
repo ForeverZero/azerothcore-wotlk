@@ -433,6 +433,9 @@ Player::~Player()
 {
     sScriptMgr->OnDestructPlayer(this);
 
+    if (m_social && GetSession() && GetSession()->IsTransient())
+        sSocialMgr->RemovePlayerSocial(GetGUID());
+
     // it must be unloaded already in PlayerLogout and accessed only for loggined player
     //m_social = nullptr;
 
@@ -485,7 +488,7 @@ void Player::CleanupsBeforeDelete(bool finalCleanup)
     Unit::CleanupsBeforeDelete(finalCleanup);
 }
 
-bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo)
+bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo, Map* map, Position const* position)
 {
     // FIXME: outfitId not used in player creating
     /// @todo: need more checks against packet modifications
@@ -507,7 +510,10 @@ bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo
     for (uint8 i = 0; i < PLAYER_SLOTS_COUNT; i++)
         m_items[i] = nullptr;
 
-    Relocate(info->positionX, info->positionY, info->positionZ, info->orientation);
+    if (position)
+        Relocate(*position);
+    else
+        Relocate(info->positionX, info->positionY, info->positionZ, info->orientation);
 
     ChrClassesEntry const* cEntry = sChrClassesStore.LookupEntry(createInfo->Class);
     if (!cEntry)
@@ -517,7 +523,7 @@ bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo
         return false;
     }
 
-    SetMap(sMapMgr->CreateMap(info->mapId, this));
+    SetMap(map ? map : sMapMgr->CreateMap(info->mapId, this));
 
     uint8 powertype = cEntry->powerType;
 
@@ -754,7 +760,10 @@ bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo
     UpdateAllStats();
     SetFullHealth();
 
-    CheckAllAchievementCriteria();
+    if (GetSession()->IsTransient())
+        m_social = sSocialMgr->LoadFromDB({}, GetGUID());
+    else
+        CheckAllAchievementCriteria();
 
     return true;
 }
@@ -1403,6 +1412,9 @@ void Player::SendTeleportAckPacket()
 
 bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientation, uint32 options /*= 0*/, Unit* target /*= nullptr*/, bool newInstance /*= false*/)
 {
+    if (GetSession()->IsTransient())
+        return false;
+
     if (!MapMgr::IsValidMapCoord(mapid, x, y, z, orientation))
     {
         LOG_ERROR("entities.player", "TeleportTo: invalid map ({}) or invalid coordinates (X: {}, Y: {}, Z: {}, O: {}) given when teleporting player ({}, name: {}, map: {}, X: {}, Y: {}, Z: {}, O: {}).",
@@ -1772,9 +1784,12 @@ void Player::RemoveFromWorld()
         ClearComboPointHolders(); // pussywizard: crashfix
         if (ObjectGuid lguid = GetLootGUID()) // pussywizard: crashfix
             m_session->DoLootRelease(lguid);
-        sOutdoorPvPMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
-        sBattlefieldMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
-        sWorldState->HandlePlayerLeaveZone(this, static_cast<AreaTableIDs>(m_zoneUpdateId));
+        if (!GetSession()->IsTransient())
+        {
+            sOutdoorPvPMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
+            sBattlefieldMgr->HandlePlayerLeaveZone(this, m_zoneUpdateId);
+            sWorldState->HandlePlayerLeaveZone(this, static_cast<AreaTableIDs>(m_zoneUpdateId));
+        }
     }
 
     // Remove items from world before self - player must be found in Item::RemoveFromObjectUpdate
@@ -13149,6 +13164,9 @@ void Player::RewardPlayerAndGroupAtEvent(uint32 creature_id, WorldObject* pRewar
 
 bool Player::IsAtGroupRewardDistance(WorldObject const* pRewardSource) const
 {
+    if (GetSession()->IsTransient())
+        return false;
+
     WorldObject const* player = GetCorpse();
     if (!player || IsAlive())
     {

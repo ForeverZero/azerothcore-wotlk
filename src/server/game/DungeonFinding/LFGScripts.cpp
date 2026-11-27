@@ -26,6 +26,7 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "WorldSession.h"
 
 namespace lfg
 {
@@ -154,6 +155,9 @@ namespace lfg
 
     void LFGGroupScript::OnAddMember(Group* group, ObjectGuid guid)
     {
+        if (Player* player = ObjectAccessor::FindConnectedPlayer(guid); player && player->GetSession()->IsTransient())
+            return;
+
         if (!sLFGMgr->isOptionEnabled(LFG_OPTION_ENABLE_DUNGEON_FINDER | LFG_OPTION_ENABLE_RAID_BROWSER | LFG_OPTION_ENABLE_SEASONAL_BOSSES))
             return;
 
@@ -199,6 +203,9 @@ namespace lfg
         // used only with EXTRA_LOGS
         (void)kicker;
         (void)reason;
+
+        if (Player* player = ObjectAccessor::FindConnectedPlayer(guid); player && player->GetSession()->IsTransient())
+            return;
 
         if (!sLFGMgr->isOptionEnabled(LFG_OPTION_ENABLE_DUNGEON_FINDER | LFG_OPTION_ENABLE_RAID_BROWSER | LFG_OPTION_ENABLE_SEASONAL_BOSSES))
             return;

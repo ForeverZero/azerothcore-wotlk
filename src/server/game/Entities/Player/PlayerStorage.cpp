@@ -7247,6 +7247,9 @@ void Player::SaveToDB(bool create, bool logout)
 
 void Player::SaveToDB(CharacterDatabaseTransaction trans, bool create, bool logout)
 {
+    if (GetSession()->IsTransient())
+        return;
+
     // delay auto save at any saves (manual, in code, or autosave)
     m_nextSave = sWorld->getIntConfig(CONFIG_INTERVAL_SAVE);
 

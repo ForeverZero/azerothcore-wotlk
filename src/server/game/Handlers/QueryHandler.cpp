@@ -32,20 +32,19 @@
 void WorldSession::SendNameQueryOpcode(ObjectGuid guid)
 {
     CharacterCacheEntry const* playerData = sCharacterCache->GetCharacterCacheByGuid(guid);
+    Player* player = ObjectAccessor::FindConnectedPlayer(guid);
 
     WorldPackets::Query::NameQueryResponse nameQueryResponse;
     nameQueryResponse.Guid = guid.WriteAsPacked();
-    if (!playerData)
+    if (!playerData && (!player || !player->GetSession()->IsTransient()))
     {
         nameQueryResponse.NameUnknown = true;
         SendPacket(nameQueryResponse.Write());
         return;
     }
 
-    Player* player = ObjectAccessor::FindConnectedPlayer(guid);
-
     nameQueryResponse.NameUnknown = false;
-    nameQueryResponse.Name = playerData->Name;
+    nameQueryResponse.Name = playerData ? playerData->Name : player->GetName();
     nameQueryResponse.Race = player ? player->getRace() : playerData->Race;
     nameQueryResponse.Sex = player ? player->getGender() : playerData->Sex;
     nameQueryResponse.Class = player ? player->getClass() : playerData->Class;
