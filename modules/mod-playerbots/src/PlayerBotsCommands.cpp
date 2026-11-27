@@ -40,7 +40,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -77,7 +76,22 @@ struct PartyBots
 };
 
 std::unordered_map<ObjectGuid, PartyBots> BotsByOwner;
-std::unordered_set<ObjectGuid> PendingLogout;
+std::vector<std::unique_ptr<WorldSession>> PendingLogout;
+
+bool CanAddBot(ChatHandler& handler, Player const& owner, Group const* group)
+{
+    if (!group || !group->IsFull())
+        return true;
+
+    if (group->isRaidGroup())
+        handler.SendErrorMessage("PlayerBots: your raid is full.");
+    else if (!group->IsLeader(owner.GetGUID()))
+        handler.SendErrorMessage("PlayerBots: only the party leader can convert a full party to a raid.");
+    else
+        return true;
+
+    return false;
+}
 
 uint8 FindRace(Player const& owner, Classes playerClass)
 {
@@ -131,15 +145,12 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
         return false;
     }
 
-    if (group && group->IsFull())
-    {
-        handler.SendErrorMessage("PlayerBots: your group is full.");
+    if (!CanAddBot(handler, *owner, group))
         return false;
-    }
 
     if ((group && (group->isBGGroup() || group->isBFGroup() || group->isLFGGroup() ||
                    sLFGMgr->GetState(group->GetGUID()) != lfg::LFG_STATE_NONE)) ||
-        sLFGMgr->GetState(ownerGuid) != lfg::LFG_STATE_NONE || PendingLogout.contains(ownerGuid))
+        sLFGMgr->GetState(ownerGuid) != lfg::LFG_STATE_NONE)
     {
         handler.SendErrorMessage("PlayerBots: your group is unavailable for temporary players.");
         return false;
@@ -187,6 +198,12 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     }
 
     group = owner->GetGroup();
+    if (!CanAddBot(handler, *owner, group))
+    {
+        session->LogoutPlayer(false);
+        return false;
+    }
+
     bool const createGroup = !group;
     if (createGroup)
     {
@@ -203,6 +220,9 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
         group->Create(owner);
         sGroupMgr->AddGroup(group);
     }
+
+    if (group->IsFull())
+        group->ConvertToRaid();
 
     if (group->IsFull() || !group->AddMember(botPlayer))
     {
@@ -222,17 +242,23 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     return true;
 }
 
+void QueueOwnerLogout(ObjectGuid owner)
+{
+    auto party = BotsByOwner.extract(owner);
+    if (party.empty())
+        return;
+
+    for (auto& session : party.mapped().Sessions)
+        PendingLogout.push_back(std::move(session));
+}
+
 void LogOutPendingBots()
 {
     while (!PendingLogout.empty())
     {
-        ObjectGuid const owner = PendingLogout.extract(PendingLogout.begin()).value();
-        auto bots = BotsByOwner.extract(owner);
-        if (bots.empty())
-            continue;
-
-        for (auto const& session : bots.mapped().Sessions)
-            session->LogoutPlayer(false);
+        auto session = std::move(PendingLogout.back());
+        PendingLogout.pop_back();
+        session->LogoutPlayer(false);
     }
 }
 
@@ -244,8 +270,7 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
-        if (BotsByOwner.contains(player->GetGUID()))
-            PendingLogout.insert(player->GetGUID());
+        QueueOwnerLogout(player->GetGUID());
     }
 
     bool OnPlayerCanJoinLfg(Player* player, uint8, std::set<uint32>&, std::string const&) override
@@ -267,25 +292,43 @@ public:
 
     void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod, ObjectGuid, char const*) override
     {
-        for (auto const& [owner, party] : BotsByOwner)
+        for (auto party = BotsByOwner.begin(); party != BotsByOwner.end(); ++party)
         {
-            if (party.GroupGuid != group->GetGUID())
+            if (party->second.GroupGuid != group->GetGUID())
                 continue;
 
-            if (owner == guid || std::ranges::any_of(party.Sessions, [guid](auto const& session)
-                {
-                    Player const* bot = session->GetPlayer();
-                    return bot && bot->GetGUID() == guid;
-                }))
-                PendingLogout.insert(owner);
+            if (party->first == guid)
+            {
+                QueueOwnerLogout(guid);
+                return;
+            }
+
+            auto& sessions = party->second.Sessions;
+            auto removed = std::ranges::find_if(sessions, [guid](auto const& session)
+            {
+                Player const* bot = session->GetPlayer();
+                return bot && bot->GetGUID() == guid;
+            });
+            if (removed == sessions.end())
+                continue;
+
+            PendingLogout.push_back(std::move(*removed));
+            sessions.erase(removed);
+            if (sessions.empty())
+                BotsByOwner.erase(party);
+
+            return;
         }
     }
 
     void OnDisband(Group* group) override
     {
-        for (auto const& [owner, party] : BotsByOwner)
-            if (party.GroupGuid == group->GetGUID())
-                PendingLogout.insert(owner);
+        for (auto party = BotsByOwner.begin(); party != BotsByOwner.end();)
+        {
+            auto current = party++;
+            if (current->second.GroupGuid == group->GetGUID())
+                QueueOwnerLogout(current->first);
+        }
     }
 };
 
@@ -299,8 +342,8 @@ public:
 
     void OnShutdown() override
     {
-        for (auto const& [owner, party] : BotsByOwner)
-            PendingLogout.insert(owner);
+        while (!BotsByOwner.empty())
+            QueueOwnerLogout(BotsByOwner.begin()->first);
 
         LogOutPendingBots();
     }
