@@ -17,6 +17,8 @@
 
 #include "Group.h"
 #include "AreaDefines.h"
+#include "ArenaTeam.h"
+#include "ArenaTeamMgr.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "Config.h"
@@ -40,8 +42,6 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
-#include "ArenaTeam.h"
-#include "ArenaTeamMgr.h"
 
 Roll::Roll(ObjectGuid _guid, LootItem const& li, bool _lootedInRaid) : itemGUID(_guid), itemid(li.itemid),
     itemRandomPropId(li.randomPropertyId), itemRandomSuffix(li.randomSuffix), itemCount(li.count), lootedInRaid(_lootedInRaid),
@@ -2501,6 +2501,16 @@ void Group::SetLfgRoles(ObjectGuid guid, const uint8 roles)
         return;
 
     slot->roles = roles;
+    SendUpdate();
+}
+
+void Group::SetTransientMemberName(ObjectGuid guid, std::string const& name)
+{
+    member_witerator slot = _getMemberWSlot(guid);
+    if (slot == m_memberSlots.end() || !slot->Transient)
+        return;
+
+    slot->name = name;
     SendUpdate();
 }
 

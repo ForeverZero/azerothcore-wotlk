@@ -19,6 +19,10 @@ available at that level, including trainer ranks unlocked by newly learned talen
 the new level and destroys previously equipped items whose level or proficiency requirements are no longer met.
 When a summoner's level changes, the server runs the same initialization on all of their bots in the group.
 
+Select one of your bots and enter `.pb role set <dps/tank/healer>` to assign a role. The server chooses a random
+specialization for that class and role, reruns initialization, and renames the bot to match. The command fails
+when the target is unavailable or the bot's class has no build for the requested role.
+
 Bots start in Follow state. Each bot rolls its own trigger distance between 8 and 12 yards and starts following
 when you move beyond it. Each bot chooses a separate random destination within 5 yards of you. It keeps that
 offset while following and rolls a new trigger distance when it settles.

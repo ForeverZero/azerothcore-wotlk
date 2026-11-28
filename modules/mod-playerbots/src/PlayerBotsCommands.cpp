@@ -37,6 +37,7 @@
 #include "Player.h"
 #include "PlayerBotTalents.h"
 #include "PlayerScript.h"
+#include "QueryPackets.h"
 #include "QuestDef.h"
 #include "Random.h"
 #include "SharedDefines.h"
@@ -170,11 +171,11 @@ uint8 FindRace(Player const& owner, Classes playerClass)
     return 0;
 }
 
-BotTalentBuild const* SelectRandomDpsBuild(Classes playerClass)
+BotTalentBuild const* SelectRandomBuild(Classes playerClass, BotRole role)
 {
     std::vector<BotTalentBuild const*> choices;
     for (BotTalentBuild const& build : PlayerBots::TalentBuilds)
-        if (build.Class == playerClass && build.Role == BotRole::Dps)
+        if (build.Class == playerClass && build.Role == role)
             choices.push_back(&build);
 
     if (choices.empty())
@@ -272,7 +273,7 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     }
 
     uint8 const race = FindRace(*owner, className.Id);
-    BotTalentBuild const* build = SelectRandomDpsBuild(className.Id);
+    BotTalentBuild const* build = SelectRandomBuild(className.Id, BotRole::Dps);
     std::string const name = build ? GenerateBotName(*build) : std::string{};
     if (!race || name.empty())
     {
@@ -639,6 +640,24 @@ bool InitBot(Player& bot, uint8 level, BotTalentBuild const& build)
     return true;
 }
 
+void RenameBot(Player& bot, std::string const& name)
+{
+    std::string const oldName = bot.GetName();
+    bot.SetName(name);
+    ObjectAccessor::UpdatePlayerNameMapReference(oldName, &bot);
+
+    WorldPackets::Query::NameQueryResponse response;
+    response.Guid = bot.GetGUID().WriteAsPacked();
+    response.Name = bot.GetName();
+    response.Race = bot.getRace();
+    response.Sex = bot.getGender();
+    response.Class = bot.getClass();
+    bot.SendMessageToSet(response.Write(), false);
+
+    if (Group* group = bot.GetGroup())
+        group->SetTransientMemberName(bot.GetGUID(), name);
+}
+
 void StopBotMovement(Player& player)
 {
     MotionMaster* motion = player.GetMotionMaster();
@@ -988,16 +1007,90 @@ public:
             { "class", HandleAddClass, SEC_PLAYER, Console::No }
         };
 
+        static ChatCommandTable const roleCommands =
+        {
+            { "set", HandleRoleSet, SEC_PLAYER, Console::No }
+        };
+
         static ChatCommandTable const playerBotsCommands =
         {
             { "add", addCommands },
-            { "init", HandleInit, SEC_PLAYER, Console::No }
+            { "init", HandleInit, SEC_PLAYER, Console::No },
+            { "role", roleCommands }
         };
 
         return { { "pb", playerBotsCommands } };
     }
 
 private:
+    static std::string_view TrimArgument(std::string_view argument)
+    {
+        constexpr std::string_view whitespace = " \t\r\n";
+        std::size_t const first = argument.find_first_not_of(whitespace);
+        if (first == std::string_view::npos)
+            return {};
+
+        return argument.substr(first, argument.find_last_not_of(whitespace) - first + 1);
+    }
+
+    static bool HandleRoleSet(ChatHandler* handler, Tail args)
+    {
+        std::string_view const requestedRole = TrimArgument(args);
+        BotRole role;
+        if (requestedRole == "dps")
+            role = BotRole::Dps;
+        else if (requestedRole == "tank")
+            role = BotRole::Tank;
+        else if (requestedRole == "healer")
+            role = BotRole::Healer;
+        else
+        {
+            handler->SendErrorMessage("PlayerBots: usage: .pb role set <dps/tank/healer>");
+            return false;
+        }
+
+        Player* owner = handler->GetPlayer();
+        if (!owner)
+            return false;
+
+        ObjectGuid const ownerGuid = owner->GetGUID();
+        ObjectGuid const botGuid = owner->GetTarget();
+        PlayerBot* bot = FindOwnedBot(ownerGuid, botGuid);
+        Player* player = bot ? ObjectAccessor::FindPlayer(botGuid) : nullptr;
+        if (!player)
+        {
+            handler->SendErrorMessage("PlayerBots: invalid target. Select one of your bots.");
+            return false;
+        }
+
+        BotTalentBuild const* build = SelectRandomBuild(bot->Build->Class, role);
+        if (!build)
+        {
+            handler->SendErrorMessage("PlayerBots: {} cannot take the {} role.", player->GetName(), requestedRole);
+            return false;
+        }
+
+        std::string const name = GenerateBotName(*build);
+        if (name.empty() || !InitBot(*player, owner->GetLevel(), *build))
+        {
+            handler->SendErrorMessage("PlayerBots: could not initialize the bot for the requested role.");
+            return false;
+        }
+
+        bot = FindOwnedBot(ownerGuid, botGuid);
+        player = bot ? ObjectAccessor::FindPlayer(botGuid) : nullptr;
+        if (!player)
+        {
+            handler->SendErrorMessage("PlayerBots: the bot is no longer available.");
+            return false;
+        }
+
+        bot->Build = build;
+        RenameBot(*player, name);
+        handler->PSendSysMessage("PlayerBots: {} is now {} ({}).", name, requestedRole, build->Name);
+        return true;
+    }
+
     static bool HandleInit(ChatHandler* handler)
     {
         Player* owner = handler->GetPlayer();
@@ -1048,15 +1141,13 @@ private:
 
     static bool HandleAddClass(ChatHandler* handler, Tail args)
     {
-        constexpr std::string_view whitespace = " \t\r\n";
-        std::size_t const first = args.find_first_not_of(whitespace);
-        if (first == std::string_view::npos)
+        std::string_view const requestedClass = TrimArgument(args);
+        if (requestedClass.empty())
         {
             handler->SendErrorMessage("Usage: .pb add class <class>");
             return false;
         }
 
-        std::string_view const requestedClass = args.substr(first, args.find_last_not_of(whitespace) - first + 1);
         for (ClassName const& className : ClassNames)
         {
             if (requestedClass == className.SimplifiedChinese || requestedClass == className.TraditionalChinese ||

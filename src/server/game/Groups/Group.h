@@ -209,6 +209,8 @@ public:
     void   RemoveAllInvites();
     bool   AddLeaderInvite(Player* player);
     bool   AddMember(Player* player, uint8 roles = 0);
+    // Refresh the in-memory roster and send it to the group when a transient player is renamed.
+    void   SetTransientMemberName(ObjectGuid guid, std::string const& name);
     bool   RemoveMember(ObjectGuid guid, RemoveMethod const& method = GROUP_REMOVEMETHOD_DEFAULT, ObjectGuid kicker = ObjectGuid::Empty, char const* reason = nullptr);
     void   ChangeLeader(ObjectGuid guid);
     void   SetLootMethod(LootMethod method);
