@@ -1417,7 +1417,7 @@ bool Player::TeleportTo(Map& map, Position const& position)
         return false;
 
     Map* const oldMap = GetMap();
-    if (oldMap != &map && map.CannotEnter(this) != Map::CAN_ENTER)
+    if (oldMap != &map && map.CannotEnter(this, /*loginCheck=*/ false) != Map::CAN_ENTER)
         return false;
 
     GetMotionMaster()->Clear();
