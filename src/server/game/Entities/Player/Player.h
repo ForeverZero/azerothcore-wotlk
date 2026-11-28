@@ -1731,7 +1731,9 @@ public:
     bool _addSpell(uint32 spellId, uint8 addSpecMask, bool temporary, bool learnFromSkill = false,
         bool sendPacket = true);
     void learnSpell(uint32 spellId, bool temporary = false, bool learnFromSkill = false);
-    void removeSpell(uint32 spellId, uint8 removeSpecMask, bool onlyTemporary, bool sendPacket = true);
+    // By default, a talent spell can retain its trained rank for another spec that relearns the talent.
+    void removeSpell(uint32 spellId, uint8 removeSpecMask, bool onlyTemporary, bool sendPacket = true,
+                     bool forgetRank = false);
     void resetSpells();
     void LearnCustomSpells();
     void LearnDefaultSkills();
@@ -2998,6 +3000,8 @@ protected:
     bool m_needZoneUpdate;
 
 private:
+    void UpdateMeleeAttacks();
+
     // internal common parts for CanStore/StoreItem functions
     InventoryResult CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool swap, Item* pSrcItem) const;
     InventoryResult CanStoreItem_InBag(uint8 bag, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool merge, bool non_specialized, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;

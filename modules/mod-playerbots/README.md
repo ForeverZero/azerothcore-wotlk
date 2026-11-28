@@ -3,14 +3,28 @@
 The server discovers this module through AzerothCore's module loader. Build `worldserver` with the module enabled.
 
 Enter `.pb add class Warrior`, `.pb add class Death Knight`, or `.pb add class 战士` in the chat box.
-The server creates a character with a random name and a race on your faction that can play the requested class.
+The server creates a character on your faction and assigns a random DPS specialization for the requested class.
+Its name starts with the role and specialization abbreviations, such as `Dpsarc` for an Arcane Mage,
+followed by random letters.
 It appears at your position and joins your party or raid. If you are solo, a party is created automatically.
 When the party is full, the leader's next add command converts it to a raid and adds the bot.
 The command fails when the raid reaches 40 members.
 
+Enter `.pb init` with one of your bots selected to initialize that bot. Clear your target to initialize all bots
+you summoned. Initialization synchronizes their levels to yours, resets talents, and spends the active spec's points
+using the bot's assigned WotLK PvE build, starting with its primary tree. It learns class quest and trainer spells
+available at that level, including trainer ranks unlocked by newly learned talents. It forgets spells above
+the new level and destroys previously equipped items whose level or proficiency requirements are no longer met.
+When a summoner's level changes, the server runs the same initialization on all of their bots in the group.
+
 Bots start in Follow state. They remain still within 10 yards. Once they start moving, they close to within 5 yards.
 They teleport to their owner after a map change or after more than 200 yards of separation for 30 seconds.
 Cross-map transfers respect instance entry checks and do not enter battlegrounds or arenas.
+
+Bots enter Combat state when they find an eligible opponent already fighting them or a teammate within 100 yards.
+They prioritize their own opponents and keep the current opponent while it remains eligible. When assisting,
+they check their summoner first. They chase into melee range and auto-attack, then resume following once they have
+no target.
 
 A bot goes offline when it is removed from the group. All bots you created go offline when you log out, leave your
 group, or the group disbands. The characters and their group memberships are held in memory.

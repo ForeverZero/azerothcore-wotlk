@@ -50,6 +50,81 @@
 // Zone Interval should be 1 second
 constexpr auto ZONE_UPDATE_INTERVAL = 1000;
 
+void Player::UpdateMeleeAttacks()
+{
+    if (HasUnitState(UNIT_STATE_MELEE_ATTACKING) && !HasUnitState(UNIT_STATE_CASTING) &&
+        !HasUnitState(UNIT_STATE_CHARGING))
+    {
+        if (Unit* victim = GetVictim())
+        {
+            // A vehicle passenger can neither turn nor move, and their stored position and
+            // orientation can be stale; never fail swing range or facing against the vehicle
+            // carrying them (e.g. Yogg-Saron's Constrictor Tentacle grab).
+            bool const victimIsVehicleBase = GetVehicleBase() == victim;
+            // A unit riding this player sits on their back (Gormok's Snobold Vassals), so it is never in front of them
+            bool const victimRidesMe = victim->GetVehicleBase() == this;
+
+            bool mainHandSwung = false;
+
+            if (isAttackReady(BASE_ATTACK))
+            {
+                if (!victimIsVehicleBase && !IsWithinMeleeRange(victim))
+                {
+                    setAttackTimer(BASE_ATTACK, 100);
+                    if (m_swingErrorMsg != 1) // send single time (client auto repeat)
+                    {
+                        SendAttackSwingNotInRange();
+                        m_swingErrorMsg = 1;
+                    }
+                }
+                // 120 degrees of radiant range, if player is not in boundary radius
+                else if (victimRidesMe || (!victimIsVehicleBase && !IsWithinBoundaryRadius(victim) &&
+                                          !HasInArc(2 * float(M_PI) / 3, victim)))
+                {
+                    setAttackTimer(BASE_ATTACK, 100);
+                    if (m_swingErrorMsg != 2) // send single time (client auto repeat)
+                    {
+                        SendAttackSwingBadFacingAttack();
+                        m_swingErrorMsg = 2;
+                    }
+                }
+                else
+                {
+                    m_swingErrorMsg = 0; // reset swing error state
+
+                    // do attack
+                    AttackerStateUpdate(victim, BASE_ATTACK);
+                    resetAttackTimer(BASE_ATTACK);
+
+                    // Blizzlike: Reset ranged swing timer when performing melee attack
+                    resetAttackTimer(RANGED_ATTACK);
+
+                    mainHandSwung = true;
+                }
+            }
+
+            // The client draws one swing animation per frame, so let the main hand swing alone
+            if (HasOffhandWeaponForAttack() && isAttackReady(OFF_ATTACK) && !mainHandSwung)
+            {
+                if (!victimIsVehicleBase && !IsWithinMeleeRange(victim))
+                    setAttackTimer(OFF_ATTACK, 100);
+                else if (victimRidesMe || (!victimIsVehicleBase && !IsWithinBoundaryRadius(victim) &&
+                                          !HasInArc(2 * float(M_PI) / 3, victim)))
+                    setAttackTimer(BASE_ATTACK, 100);
+                else
+                {
+                    // do attack
+                    AttackerStateUpdate(victim, OFF_ATTACK);
+                    resetAttackTimer(OFF_ATTACK);
+
+                    // Blizzlike: Reset ranged swing timer when performing melee attack
+                    resetAttackTimer(RANGED_ATTACK);
+                }
+            }
+        }
+    }
+}
+
 void Player::Update(uint32 p_time)
 {
     if (!IsInWorld())
@@ -57,7 +132,20 @@ void Player::Update(uint32 p_time)
 
     if (GetSession()->IsTransient())
     {
-        UpdateMovement(p_time);
+        Unit::Update(p_time);
+        if (!IsInWorld())
+            return;
+
+        Unit const* victim = GetVictim();
+        if (IsAlive() && victim && IsInMap(victim) && IsWithinMeleeRange(victim) && IsValidAttackTarget(victim))
+        {
+            SetInFront(victim);
+            UpdateMeleeAttacks();
+        }
+
+        if (m_deathState == DeathState::JustDied)
+            KillPlayer();
+
         return;
     }
 
@@ -162,85 +250,7 @@ void Player::Update(uint32 p_time)
 
     m_achievementMgr->Update(p_time);
 
-    if (HasUnitState(UNIT_STATE_MELEE_ATTACKING) && !HasUnitState(UNIT_STATE_CASTING) && !HasUnitState(UNIT_STATE_CHARGING))
-    {
-        if (Unit* victim = GetVictim())
-        {
-            // default combat reach 10
-            /// @todo add weapon, skill check
-
-            // A vehicle passenger can neither turn nor move, and their stored position and
-            // orientation can be stale; never fail swing range or facing against the vehicle
-            // carrying them (e.g. Yogg-Saron's Constrictor Tentacle grab).
-            bool const victimIsVehicleBase = GetVehicleBase() == victim;
-            // A unit riding this player sits on their back (Gormok's Snobold Vassals), so it is never in front of them
-            bool const victimRidesMe = victim->GetVehicleBase() == this;
-
-            bool mainHandSwung = false;
-
-            if (isAttackReady(BASE_ATTACK))
-            {
-                if (!victimIsVehicleBase && !IsWithinMeleeRange(victim))
-                {
-                    setAttackTimer(BASE_ATTACK, 100);
-                    if (m_swingErrorMsg != 1) // send single time (client auto repeat)
-                    {
-                        SendAttackSwingNotInRange();
-                        m_swingErrorMsg = 1;
-                    }
-                }
-                // 120 degrees of radiant range, if player is not in boundary radius
-                else if (victimRidesMe || (!victimIsVehicleBase && !IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim)))
-                {
-                    setAttackTimer(BASE_ATTACK, 100);
-                    if (m_swingErrorMsg != 2) // send single time (client auto repeat)
-                    {
-                        SendAttackSwingBadFacingAttack();
-                        m_swingErrorMsg = 2;
-                    }
-                }
-                else
-                {
-                    m_swingErrorMsg = 0; // reset swing error state
-
-                    // do attack
-                    AttackerStateUpdate(victim, BASE_ATTACK);
-                    resetAttackTimer(BASE_ATTACK);
-
-                    // Blizzlike: Reset ranged swing timer when performing melee attack
-                    resetAttackTimer(RANGED_ATTACK);
-
-                    mainHandSwung = true;
-                }
-            }
-
-            // The client draws one swing animation per frame, so let the main hand swing alone
-            if (HasOffhandWeaponForAttack() && isAttackReady(OFF_ATTACK) && !mainHandSwung)
-            {
-                if (!victimIsVehicleBase && !IsWithinMeleeRange(victim))
-                    setAttackTimer(OFF_ATTACK, 100);
-                else if (victimRidesMe || (!victimIsVehicleBase && !IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim)))
-                    setAttackTimer(BASE_ATTACK, 100);
-                else
-                {
-                    // do attack
-                    AttackerStateUpdate(victim, OFF_ATTACK);
-                    resetAttackTimer(OFF_ATTACK);
-
-                    // Blizzlike: Reset ranged swing timer when performing melee attack
-                    resetAttackTimer(RANGED_ATTACK);
-                }
-            }
-
-            /*Unit* owner = victim->GetOwner();
-            Unit* u = owner ? owner : victim;
-            if (u->IsPvP() && (!duel || duel->opponent != u))
-            {
-                UpdatePvP(true);
-                RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_ENTER_PVP_COMBAT);
-            }*/
-        }
-    }
+    UpdateMeleeAttacks();
 
     if (HasPlayerFlag(PLAYER_FLAGS_RESTING))
     {

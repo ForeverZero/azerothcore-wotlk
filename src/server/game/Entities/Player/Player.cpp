@@ -2618,7 +2618,7 @@ void Player::GiveLevel(uint8 level)
         pet->SynchronizeLevelWithOwner();
 
     MailLevelReward const* mailReward = sObjectMgr->GetMailLevelReward(level, getRaceMask());
-    if (mailReward && sScriptMgr->OnPlayerCanGiveMailRewardAtGiveLevel(this, level))
+    if (mailReward && !GetSession()->IsTransient() && sScriptMgr->OnPlayerCanGiveMailRewardAtGiveLevel(this, level))
     {
         //- TODO: Poor design of mail system
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
@@ -3570,25 +3570,33 @@ uint8 Player::GetLearnSpellSpecMask(uint32 spellId) const
     return specMask;
 }
 
-void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTemporary, bool sendPacket /*= true*/)
+void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTemporary, bool sendPacket, bool forgetRank)
 {
     PlayerSpellMap::iterator itr = m_spells.find(spell_id);
     if (itr == m_spells.end())
         return;
 
-    // pussywizard: nothing to do if already removed or not in specs of removeSpecMask
-    if (itr->second->State == PLAYERSPELL_REMOVED || (itr->second->specMask & removeSpecMask) == 0)
+    if (itr->second->State == PLAYERSPELL_REMOVED)
         return;
 
     // pussywizard: avoid any possible bugs
     if (onlyTemporary && itr->second->State != PLAYERSPELL_TEMPORARY)
         return;
 
+    if ((itr->second->specMask & removeSpecMask) == 0)
+    {
+        // A dormant talent spell has already been removed from the spellbook and has no live effects to undo.
+        if (forgetRank && itr->second->specMask == 0)
+            itr->second->State = PLAYERSPELL_REMOVED;
+
+        return;
+    }
+
     // pussywizard: remove non-talent higher ranks (recursive)
     // pussywizard: do this at the beginning, not in the middle of removing!
     if (uint32 nextSpell = sSpellMgr->GetNextSpellInChain(spell_id))
         if (!GetTalentSpellPos(nextSpell))
-            removeSpell(nextSpell, removeSpecMask, onlyTemporary, sendPacket);
+            removeSpell(nextSpell, removeSpecMask, onlyTemporary, sendPacket, forgetRank);
 
     // xinef: if current spell has talentcost, remove spells requiring this spell
     uint32 firstRankSpellId = sSpellMgr->GetFirstSpellInChain(spell_id);
@@ -3597,7 +3605,7 @@ void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTempora
         SpellsRequiringSpellMapBounds spellsRequiringSpell = sSpellMgr->GetSpellsRequiringSpellBounds(firstRankSpellId);
         for (auto spellsItr = spellsRequiringSpell.first; spellsItr != spellsRequiringSpell.second; ++spellsItr)
         {
-            removeSpell(spellsItr->second, removeSpecMask, onlyTemporary, sendPacket);
+            removeSpell(spellsItr->second, removeSpecMask, onlyTemporary, sendPacket, forgetRank);
         }
     }
 
@@ -3608,8 +3616,10 @@ void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTempora
 
     itr->second->specMask = (((uint8)itr->second->specMask) & ~removeSpecMask); // pussywizard: update specMask in map
 
-    // pussywizard: some more conditions needed for spells like pyroblast (shouldn't be fully removed when not available in any spec, should stay in db with specMask = 0)
-    if (GetTalentSpellCost(firstRankSpellId) == 0 && !sSpellMgr->IsAdditionalTalentSpell(firstRankSpellId) && itr->second->specMask == 0)
+    // Keep dormant talent spell ranks for spec changes unless the ranks themselves are being forgotten.
+    bool const keepRank = !forgetRank &&
+        (GetTalentSpellCost(firstRankSpellId) || sSpellMgr->IsAdditionalTalentSpell(firstRankSpellId));
+    if (itr->second->specMask == 0 && !keepRank)
     {
         if (itr->second->State == PLAYERSPELL_NEW || itr->second->State == PLAYERSPELL_TEMPORARY)
         {
@@ -12890,7 +12900,7 @@ void Player::AutoUnequipOffhandIfNeed(bool force /*= false*/)
         RemoveItem(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND, true);
         StoreItem(off_dest, offItem, true);
     }
-    else
+    else if (!GetSession()->IsTransient())
     {
         MoveItemFromInventory(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND, true);
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
@@ -15689,9 +15699,12 @@ void Player::ActivateSpec(uint8 spec)
         InterruptNonMeleeSpells(false);
 
     // xinef: save current actions order
-    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-    _SaveActions(trans);
-    CharacterDatabase.CommitTransaction(trans);
+    if (!GetSession()->IsTransient())
+    {
+        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+        _SaveActions(trans);
+        CharacterDatabase.CommitTransaction(trans);
+    }
 
     // xinef: remove pet, it will be resummoned later
     if (Pet* pet = GetPet())
@@ -15827,6 +15840,7 @@ void Player::ActivateSpec(uint8 spec)
     InitTalentForLevel();
 
     // load them asynchronously
+    if (!GetSession()->IsTransient())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_ACTIONS_SPEC);
         stmt->SetData(0, GetGUID().GetRawValue());

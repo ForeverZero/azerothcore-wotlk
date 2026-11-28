@@ -1445,7 +1445,12 @@ public:
     bool DeleteGameTele(std::string_view name);
 
     Trainer::Trainer* GetTrainer(uint32 creatureId);
-    std::vector<Trainer::Trainer const*> const& GetClassTrainers(uint8 classId) const { return _classTrainers.at(classId); }
+    [[nodiscard]] std::vector<Trainer::Trainer const*> const& GetClassTrainers(uint8 classId) const
+    {
+        static std::vector<Trainer::Trainer const*> const empty;
+        auto const trainers = _classTrainers.find(classId);
+        return trainers != _classTrainers.end() ? trainers->second : empty;
+    }
 
     [[nodiscard]] VendorItemData const* GetNpcVendorItemList(uint32 entry) const
     {
