@@ -198,6 +198,7 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
 
     bot->SetPhaseMask(owner->GetPhaseMask(), false);
     bot->SetImmuneToAll(true);
+    bot->GetMotionMaster()->Initialize();
     session->SetPlayer(bot.get());
     ObjectAccessor::AddObject(bot.get());
     if (!map->AddPlayerToMap(bot.get()))
