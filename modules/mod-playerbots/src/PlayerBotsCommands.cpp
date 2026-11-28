@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <set>
@@ -93,6 +94,11 @@ enum class BotState
     Combat
 };
 
+constexpr float MinFollowTriggerDistance = 8.0f;
+constexpr float MaxFollowTriggerDistance = 12.0f;
+constexpr float FollowArrivalDistance = 5.0f;
+constexpr float MinBotOffsetDistance = 1.5f;
+
 struct PlayerBot
 {
     PlayerBot(std::unique_ptr<WorldSession> session, BotTalentBuild const& build)
@@ -101,7 +107,7 @@ struct PlayerBot
     std::unique_ptr<WorldSession> Session;
     BotTalentBuild const* Build;
     BotState State = BotState::Follow;
-    bool ApproachingOwner = false;
+    float FollowTriggerDistance = frand(MinFollowTriggerDistance, MaxFollowTriggerDistance);
     std::optional<TimePoint> OutOfRangeSince;
 };
 
@@ -210,6 +216,34 @@ std::string GenerateBotName(BotTalentBuild const& build)
     return {};
 }
 
+std::optional<Position> FindNearbyBotPosition(Player const& owner, float radius)
+{
+    constexpr uint8 maxAttempts = 12;
+    Position const center = owner.GetPosition();
+    Map const* map = owner.GetMap();
+    for (uint8 attempt = 0; attempt < maxAttempts; ++attempt)
+    {
+        float const angle = frand(0.0f, 2.0f * float(M_PI));
+        float const distance = frand(MinBotOffsetDistance, radius);
+        float x = center.GetPositionX() + distance * std::cos(angle);
+        float y = center.GetPositionY() + distance * std::sin(angle);
+        float z = center.GetPositionZ();
+        Acore::NormalizeMapCoord(x);
+        Acore::NormalizeMapCoord(y);
+        if (!map->CheckCollisionAndGetValidCoords(&owner, center.GetPositionX(), center.GetPositionY(),
+                                                  center.GetPositionZ(), x, y, z, false))
+            continue;
+
+        Position candidate(x, y, z, center.GetOrientation());
+        if (center.GetExactDist(candidate) <= radius && center.GetExactDist2d(candidate) >= MinBotOffsetDistance)
+            return candidate;
+    }
+
+    return std::nullopt;
+}
+
+bool InitBot(Player& bot, uint8 level, BotTalentBuild const& build);
+
 bool AddBot(ChatHandler& handler, ClassName const& className)
 {
     Player* owner = handler.GetPlayer();
@@ -251,7 +285,8 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     auto bot = std::make_unique<Player>(session.get());
     CharacterCreateInfo createInfo(name, race, className.Id, urand(0, 1) ? GENDER_MALE : GENDER_FEMALE);
     ObjectGuid::LowType const lowGuid = sObjectMgr->GetGenerator<HighGuid::Player>().Generate();
-    Position const position = owner->GetPosition();
+    Position position = FindNearbyBotPosition(*owner, 10.0f).value_or(owner->GetPosition());
+    position.SetOrientation(frand(0.0f, 2.0f * float(M_PI)));
     // The character is linked into the map's player list by Create, as in normal login.
     if (!bot->Create(lowGuid, &createInfo, map, &position) || map->CannotEnter(bot.get(), true) != Map::CAN_ENTER)
     {
@@ -272,8 +307,25 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     }
 
     Player* botPlayer = bot.release();
+    ObjectGuid const botGuid = botPlayer->GetGUID();
     owner = ObjectAccessor::FindPlayer(ownerGuid);
     if (!owner)
+    {
+        session->LogoutPlayer(false);
+        return false;
+    }
+
+    uint8 const ownerLevel = owner->GetLevel();
+    if (!InitBot(*botPlayer, ownerLevel, *build))
+    {
+        session->LogoutPlayer(false);
+        handler.SendErrorMessage("PlayerBots: could not initialize the summoned bot.");
+        return false;
+    }
+
+    owner = ObjectAccessor::FindPlayer(ownerGuid);
+    botPlayer = ObjectAccessor::FindPlayer(botGuid);
+    if (!owner || !botPlayer)
     {
         session->LogoutPlayer(false);
         return false;
@@ -319,7 +371,7 @@ bool AddBot(ChatHandler& handler, ClassName const& className)
     PartyBots& party = BotsByOwner[ownerGuid];
     party.GroupGuid = group->GetGUID();
     if (party.Members.empty())
-        party.OwnerLevel = owner->GetLevel();
+        party.OwnerLevel = ownerLevel;
 
     party.Members.emplace_back(std::move(session), *build);
     group->BroadcastGroupUpdate();
@@ -599,8 +651,6 @@ void StopBotMovement(Player& player)
 
 void UpdateFollow(PlayerBot& bot, Player& player, Player& owner, TimePoint now)
 {
-    constexpr float startDistance = 10.0f;
-    constexpr float stopDistance = 5.0f;
     constexpr float teleportDistance = 200.0f;
     constexpr Seconds teleportDelay{30};
 
@@ -611,9 +661,9 @@ void UpdateFollow(PlayerBot& bot, Player& player, Player& owner, TimePoint now)
     if (player.GetMap() != &ownerMap)
     {
         bot.OutOfRangeSince.reset();
-        bot.ApproachingOwner = false;
         StopBotMovement(player);
-        player.TeleportTo(ownerMap, owner.GetPosition());
+        Position const position = FindNearbyBotPosition(owner, FollowArrivalDistance).value_or(owner.GetPosition());
+        player.TeleportTo(ownerMap, position);
         return;
     }
 
@@ -624,29 +674,35 @@ void UpdateFollow(PlayerBot& bot, Player& player, Player& owner, TimePoint now)
         bot.OutOfRangeSince = now;
     else if (now - *bot.OutOfRangeSince >= teleportDelay)
     {
-        if (player.TeleportTo(ownerMap, owner.GetPosition()))
-        {
-            bot.OutOfRangeSince.reset();
-            bot.ApproachingOwner = false;
-        }
+        bot.OutOfRangeSince.reset();
+        Position const position = FindNearbyBotPosition(owner, FollowArrivalDistance).value_or(owner.GetPosition());
+        player.TeleportTo(ownerMap, position);
         return;
     }
 
-    if (distance <= stopDistance)
-    {
-        bot.ApproachingOwner = false;
-        StopBotMovement(player);
-        return;
-    }
-
-    // Once started, close to five yards before going idle so the ten-yard trigger does not cause stutter.
-    if (!bot.ApproachingOwner && distance <= startDistance)
-        return;
-
-    bot.ApproachingOwner = true;
     MotionMaster* motion = player.GetMotionMaster();
-    if (motion->GetMotionSlotType(MOTION_SLOT_ACTIVE) != FOLLOW_MOTION_TYPE || player.movespline->Finalized())
-        motion->MoveFollow(&owner, 0.0f, float(M_PI), MOTION_SLOT_ACTIVE, false);
+    bool const following = motion->GetMotionSlotType(MOTION_SLOT_ACTIVE) == FOLLOW_MOTION_TYPE;
+    if (following)
+    {
+        if (!player.movespline->Finalized() || player.HasUnitState(UNIT_STATE_NOT_MOVE))
+            return;
+
+        if (distance <= FollowArrivalDistance)
+        {
+            bot.FollowTriggerDistance = frand(MinFollowTriggerDistance, MaxFollowTriggerDistance);
+            StopBotMovement(player);
+            return;
+        }
+    }
+    else if (distance <= bot.FollowTriggerDistance)
+        return;
+
+    std::optional<Position> const destination = FindNearbyBotPosition(owner, FollowArrivalDistance);
+    float const radius = destination ? owner.GetExactDist2d(*destination)
+                                     : frand(MinBotOffsetDistance, FollowArrivalDistance);
+    float const angle = destination ? owner.GetRelativeAngle(&*destination) : frand(0.0f, 2.0f * float(M_PI));
+    // The follow generator adds the follower's combat reach to this offset.
+    motion->MoveFollow(&owner, radius - player.GetCombatReach(), angle, MOTION_SLOT_ACTIVE, false);
 }
 
 Unit* FindCombatOpponent(Player const& bot, Player const& fighter)
@@ -716,7 +772,6 @@ void LeaveBotCombat(PlayerBot& bot, Player& player)
 {
     bot.State = BotState::Follow;
     bot.OutOfRangeSince.reset();
-    bot.ApproachingOwner = false;
     StopBotMovement(player);
     player.AttackStop();
 }
@@ -745,7 +800,6 @@ void UpdateBotState(PlayerBot& bot, Player& player, Player* owner, TimePoint now
 
     bot.State = BotState::Combat;
     bot.OutOfRangeSince.reset();
-    bot.ApproachingOwner = false;
     if (player.GetVictim() == target && player.HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
         player.GetMotionMaster()->GetMotionSlotType(MOTION_SLOT_ACTIVE) == CHASE_MOTION_TYPE)
         return;

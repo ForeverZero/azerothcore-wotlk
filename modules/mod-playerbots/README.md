@@ -6,7 +6,9 @@ Enter `.pb add class Warrior`, `.pb add class Death Knight`, or `.pb add class æ
 The server creates a character on your faction and assigns a random DPS specialization for the requested class.
 Its name starts with the role and specialization abbreviations, such as `Dpsarc` for an Arcane Mage,
 followed by random letters.
-It appears at your position and joins your party or raid. If you are solo, a party is created automatically.
+It spawns at a random valid position within 10 yards, faces a random direction, and runs the same initialization
+as `.pb init` before joining your party or raid. If no nearby position is suitable, it spawns at your position.
+If you are solo, a party is created automatically.
 When the party is full, the leader's next add command converts it to a raid and adds the bot.
 The command fails when the raid reaches 40 members.
 
@@ -17,7 +19,9 @@ available at that level, including trainer ranks unlocked by newly learned talen
 the new level and destroys previously equipped items whose level or proficiency requirements are no longer met.
 When a summoner's level changes, the server runs the same initialization on all of their bots in the group.
 
-Bots start in Follow state. They remain still within 10 yards. Once they start moving, they close to within 5 yards.
+Bots start in Follow state. Each bot rolls its own trigger distance between 8 and 12 yards and starts following
+when you move beyond it. Each bot chooses a separate random destination within 5 yards of you. It keeps that
+offset while following and rolls a new trigger distance when it settles.
 They teleport to their owner after a map change or after more than 200 yards of separation for 30 seconds.
 Cross-map transfers respect instance entry checks and do not enter battlegrounds or arenas.
 
